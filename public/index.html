@@ -1206,6 +1206,38 @@
             display: block
         }
 
+        /* ping counter */
+        #ping-counter {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            background: hsl(var(--card));
+            border: 1px solid hsl(var(--border));
+            color: hsl(var(--foreground));
+            font-size: 12px;
+            font-weight: 700;
+            font-family: monospace;
+            padding: 4px 10px;
+            border-radius: 8px;
+            z-index: 99999;
+            pointer-events: none;
+            display: none
+        }
+
+        #ping-counter.visible {
+            display: block
+        }
+
+        /* shift fps right when ping is also visible */
+        #ping-counter.visible ~ #fps-counter.visible,
+        body:has(#ping-counter.visible) #fps-counter.visible {
+            right: 12px
+        }
+
+        body:has(#ping-counter.visible) #fps-counter.visible {
+            right: calc(12px + var(--ping-w, 80px) + 8px)
+        }
+
         /* theme picker */
         .theme-dropdown {
             position: relative;
@@ -1930,6 +1962,7 @@
     <div class="blur-overlay"></div>
     <canvas id="particles" width="1322" height="935"></canvas>
     <canvas id="particle-grid" width="1322" height="935"></canvas>
+    <div id="ping-counter">-- ms</div>
     <div id="fps-counter">0 FPS</div>
     <div id="app">
         <div id="v-home" class="view active">
@@ -2072,6 +2105,14 @@
                             </div>
                         </div>
                         <div class="s-card">
+                            <div class="s-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg> Ping Counter</div>
+                            <p>Show network latency in ms. Appears to the left of FPS if enabled.</p>
+                            <div class="s-row">
+                                <span>Enable</span>
+                                <button class="toggle-sw off" id="t-ping"><span class="knob"></span></button>
+                            </div>
+                        </div>
+                        <div class="s-card">
                             <div class="s-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/></svg> Normal Grid Mode</div>
                             <p>Disable hardware detection for particle grid.</p>
                             <div class="s-row">
@@ -2161,6 +2202,7 @@
                                 <div class="theme-dropdown-list" id="supplier-dropdown-list">
                                     <div class="theme-dropdown-item active" data-supplier="flux">Flux Games</div>
                                     <div class="theme-dropdown-item" data-supplier="gnmath">GN-Math</div>
+                                    <div class="theme-dropdown-item" data-supplier="gnmath-local">GN-Math Local</div>
                                 </div>
                             </div>
                             <div id="supplier-status-wrap" style="margin-bottom:12px;display:none">
@@ -2958,6 +3000,8 @@
             S.performanceMode = false;
         if (S.fpsEnabled === undefined)
             S.fpsEnabled = false;
+        if (S.pingEnabled === undefined)
+            S.pingEnabled = false;
         if (S.particleGrid === undefined)
             S.particleGrid = false;
         if (S.normalGridMode === undefined)
@@ -3514,14 +3558,8 @@
                 const doFetch = () => {
                     fetch(item.url)
                         .then(r => r.ok ? r.text() : null)
-                        .then(html => {
-                            if (html) {
-                                const base = item.url.substring(0, item.url.lastIndexOf('/') + 1);
-                                const patched = html.includes('<head>')
-                                    ? html.replace('<head>', `<head><base href="${base}">`)
-                                    : `<base href="${base}">` + html;
-                                _prefetchCache.set(item.url, patched);
-                            }
+                        .then(txt => {
+                            if (txt) _prefetchCache.set(item.url, txt);
                         })
                         .catch(() => {}) // silently ignore failures
                         .finally(() => {
@@ -3742,15 +3780,16 @@
 
         $('#btn-back').onclick = () => {
             const p = $('#player');
+            // Nuke the iframe entirely to kill audio/JS — src='' alone doesn't stop srcdoc-based games
+            const wrap = document.querySelector('#player .iframe-wrap');
+            if (wrap) wrap.innerHTML = '<iframe id="game-iframe" allow="fullscreen; autoplay; gamepad; pointer-lock" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-downloads"></iframe>';
             if (S.performanceMode) {
                 p.classList.remove('active', 'visible', 'closing', 'settled');
-                $('#game-iframe').src = '';
             } else {
                 p.classList.add('closing');
                 p.classList.remove('visible', 'settled');
                 setTimeout( () => {
                     p.classList.remove('active', 'closing');
-                    $('#game-iframe').src = '';
                 }, 300);
             }
             $('#app').style.display = '';
@@ -3781,15 +3820,31 @@
             });
         };
         $('#btn-popout').onclick = () => {
-            if (!currentGame)
-                return;
-            const w = window.open('about:blank', '_blank');
-            if (w) {
+            if (!currentGame) return;
+            if (currentGame._gnZone) {
+                const gameUrl = gnResolveUrl(currentGame._gnZone.url);
+                const txt = _prefetchCache.get(gameUrl);
+                if (txt) {
+                    const blobUrl = URL.createObjectURL(new Blob([txt], { type: 'text/html' }));
+                    window.open(blobUrl, '_blank');
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+                } else {
+                    fetch(gameUrl)
+                        .then(r => r.text())
+                        .then(txt => {
+                            const blobUrl = URL.createObjectURL(new Blob([txt], { type: 'text/html' }));
+                            window.open(blobUrl, '_blank');
+                            setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+                        })
+                        .catch(() => showToast('Failed to pop out game', false));
+                }
+            } else {
+                const w = window.open('about:blank', '_blank');
+                if (!w) return;
                 w.document.write('<!DOCTYPE html><html style="margin:0;padding:0;height:100%;overflow:hidden"><head><title>' + currentGame.title + '</title></head><body style="margin:0;padding:0;height:100%;overflow:hidden"><iframe src="' + currentGame.url + '" style="width:100%;height:100%;border:none" allow="fullscreen;autoplay;gamepad;pointer-lock" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-downloads"></iframe></body></html>');
-                w.document.close()
+                w.document.close();
             }
-        }
-        ;
+        };
 
         const CLOAKS = [
             { id: 'none', name: 'None', title: '', icon: '' },
@@ -4105,6 +4160,7 @@
             setToggle($('#t-particle-grid'), S.particleGrid);
             setToggle($('#t-fps'), S.fpsEnabled);
             setToggle($('#t-normal-grid'), S.normalGridMode);
+            if ($('#t-ping')) setToggle($('#t-ping'), !!S.pingEnabled);
             if ($('#t-eruda')) setToggle($('#t-eruda'), !!S.erudaEnabled);
             if ($('#t-minecraft-font')) setToggle($('#t-minecraft-font'), S.minecraftFont !== false);
         }
@@ -4159,8 +4215,22 @@
             }
             fpsRaf = requestAnimationFrame(fpsLoop);
         }
+        function updateFpsPosition() {
+            const el = $('#fps-counter');
+            const ping = $('#ping-counter');
+            if (!el || !ping) return;
+            if (ping.classList.contains('visible')) {
+                const pingW = ping.offsetWidth || 72;
+                el.style.right = (12 + pingW + 8) + 'px';
+            } else {
+                el.style.right = '12px';
+            }
+        }
         function applyFps() {
             const el = $('#fps-counter');
+            // always cancel first to prevent double-loops
+            cancelAnimationFrame(fpsRaf);
+            fpsRaf = 0;
             if (S.fpsEnabled) {
                 el.classList.add('visible');
                 fpsFrames = 0;
@@ -4168,8 +4238,8 @@
                 fpsRaf = requestAnimationFrame(fpsLoop);
             } else {
                 el.classList.remove('visible');
-                cancelAnimationFrame(fpsRaf);
             }
+            updateFpsPosition();
         }
         applyFps();
         $('#t-fps').onclick = () => {
@@ -4178,6 +4248,50 @@
             syncSettings();
             applyFps();
         };
+
+        // ping counter
+        let pingInterval = 0;
+        async function measurePing() {
+            const el = $('#ping-counter');
+            if (!el) return;
+            try {
+                const t = performance.now();
+                await fetch(location.origin + '/favicon.ico', { method: 'HEAD', cache: 'no-store' });
+                const ms = Math.round(performance.now() - t);
+                el.textContent = ms + ' ms';
+                el.style.color = ms < 80 ? '#4ade80' : ms < 200 ? '#facc15' : '#f87171';
+            } catch(e) {
+                el.textContent = '-- ms';
+                el.style.color = '';
+            }
+            // update fps offset
+            const pingW = el.offsetWidth;
+            document.documentElement.style.setProperty('--ping-w', pingW + 'px');
+        }
+        function applyPing() {
+            const el = $('#ping-counter');
+            if (!el) return;
+            if (S.pingEnabled) {
+                el.classList.add('visible');
+                measurePing();
+                pingInterval = setInterval(measurePing, 3000);
+            } else {
+                el.classList.remove('visible');
+                el.style.color = '';
+                clearInterval(pingInterval);
+            }
+            // reposition fps without restarting its loop
+            updateFpsPosition();
+        }
+        applyPing();
+        if ($('#t-ping')) {
+            $('#t-ping').onclick = () => {
+                S.pingEnabled = !S.pingEnabled;
+                save();
+                syncSettings();
+                applyPing();
+            };
+        }
         $('#t-normal-grid').onclick = () => {
             S.normalGridMode = !S.normalGridMode;
             save();
@@ -4945,18 +5059,118 @@ document.addEventListener('fullscreenchange', () => {
             return _gnGamesCache;
         }
 
-        // gn-math games load differently
+        // ── GN-Math Local ─────────────────────────────────────────────────────────
+        // Games are flat .html files inside /games/gn-math-testproxythingy/.
+        // Discovery uses a manifest you drop in the same folder:
+        //   public/games/gn-math-testproxythingy/games.json
+        // Content: ["OvO.html", "slope.html", ...]
+        // Titles are read from each file's <title> tag.
+        // Thumbnails: place a same-stem image (.png/.jpg/.jpeg/.webp) next to the
+        // .html file and it will be picked up automatically; otherwise no image.
+
+        const GN_LOCAL_BASE = '/games/gn-math-testproxythingy/';
+        const GN_LOCAL_S3   = 'https://sstudyingtipsforyou.s3.amazonaws.com/public/games/gn-math-testproxythingy/';
+        const GN_LOCAL_MANIFEST = GN_LOCAL_BASE + 'games.json';
+        let _gnLocalCache = null;
+
+        async function fetchGnMathLocalGames() {
+            if (_gnLocalCache) return _gnLocalCache;
+
+            let files;
+            try {
+                const r = await fetch(GN_LOCAL_MANIFEST + '?t=' + Date.now(), { cache: 'no-store' });
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                files = await r.json();
+                if (!Array.isArray(files) || !files.length) throw new Error('manifest is empty');
+            } catch(e) {
+                throw new Error('GN-Math Local: failed to load games.json — ' + e.message);
+            }
+
+            const games = await Promise.all(files.map(async (file) => {
+                const gameUrl = GN_LOCAL_BASE + file;
+                const s3Url   = GN_LOCAL_S3 + file;
+                const id = 'gnmath_local_' + file.replace(/[^a-zA-Z0-9]/g, '_');
+
+                let title = file.replace(/\.html$/i, '').replace(/[-_]/g, ' ');
+                title = title.charAt(0).toUpperCase() + title.slice(1);
+
+                try {
+                    const r = await fetch(gameUrl, { cache: 'no-store' });
+                    if (r.ok) {
+                        const text = await r.text();
+                        const m = text.match(/<title[^>]*>([^<]+)<\/title>/i);
+                        if (m && m[1].trim()) title = m[1].trim();
+                    }
+                } catch(_) {}
+
+                let image = '';
+                const stem = file.replace(/\.html$/i, '');
+                for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
+                    try {
+                        const ir = await fetch(GN_LOCAL_BASE + stem + ext, { method: 'HEAD', cache: 'no-store' });
+                        if (ir.ok) { image = GN_LOCAL_BASE + stem + ext; break; }
+                    } catch(_) {}
+                }
+
+                return { id, title, url: gameUrl, s3Url, image, _gnLocal: true };
+            }));
+
+            _gnLocalCache = games;
+            return _gnLocalCache;
+        }
+        // ─────────────────────────────────────────────────────────────────────────
+
+        // gn-math games: fetch raw HTML → srcdoc (no patching, same as working reference)
         const _origPlayGame = playGame;
         window.playGame = async function(g) {
             if (!g) return;
+            if (g._gnLocal) {
+                _lastView = view || 'home';
+                currentGame = g;
+                $('#player-title').textContent = g.title;
+                $('#playing-label').textContent = 'Playing ' + g.title;
+
+                const wrap = document.querySelector('#player .iframe-wrap');
+                if (wrap) {
+                    wrap.innerHTML = '<iframe id="game-iframe" allow="fullscreen; autoplay; gamepad; pointer-lock" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-downloads"></iframe>';
+                }
+
+                $('#app').style.display = 'none';
+                $('#nav-wrap').style.display = 'none';
+                $('#vanta-bg').style.display = 'none';
+                $('.blur-overlay').style.display = 'none';
+                $('#particles').style.display = 'none';
+                $('#particle-grid').style.display = 'none';
+                cancelAnimationFrame(animId);
+                cancelAnimationFrame(gridAnimId);
+                if (window._vantaEffect?.destroy) { window._vantaEffect.destroy(); window._vantaEffect = null; }
+
+                const p = $('#player');
+                p.classList.add('active');
+                if (S.performanceMode) {
+                    p.classList.add('visible', 'settled');
+                } else {
+                    requestAnimationFrame(() => requestAnimationFrame(() => {
+                        p.classList.add('visible');
+                        setTimeout(() => p.classList.add('settled'), 500);
+                    }));
+                }
+
+                const iframe = $('#game-iframe');
+                if (iframe) {
+                    iframe.removeAttribute('sandbox');
+                    if (window._scramjetReady) {
+                        // Route through scramjet so blocked CDN links get proxied
+                        iframe.src = 'embed.html?url=' + encodeURIComponent(g.s3Url);
+                    } else {
+                        // Scramjet not ready — serve directly from local path
+                        iframe.src = g.url;
+                    }
+                }
+                return;
+            }
             if (g._gnZone) {
                 const z = g._gnZone;
-                // External URL: open directly via original player
-                if (z.url && z.url.startsWith('http') && !z.url.includes('{')) {
-                    _origPlayGame({ ...g, url: z.url });
-                    return;
-                }
-                // Fetch-and-srcdoc pattern (same as GN-Math source)
                 const gameUrl = gnResolveUrl(z.url);
                 _lastView = view || 'home';
                 currentGame = g;
@@ -4990,28 +5204,22 @@ document.addEventListener('fullscreenchange', () => {
                 }
 
                 try {
-                    // use cache if we have it
-                    let patched = _prefetchCache.get(gameUrl);
-                    if (!patched) {
-                        const res = await fetch(gameUrl + '?t=' + Date.now());
+                    let txt = _prefetchCache.get(gameUrl);
+                    if (!txt) {
+                        const res = await fetch(gameUrl);
                         if (!res.ok) throw new Error('HTTP ' + res.status);
-                        const html = await res.text();
-                        const baseUrl = gameUrl.substring(0, gameUrl.lastIndexOf('/') + 1);
-                        patched = html.includes('<head>')
-                            ? html.replace('<head>', `<head><base href="${baseUrl}">`)
-                            : `<base href="${baseUrl}">` + html;
-                        // cache it
-                        _prefetchCache.set(gameUrl, patched);
+                        txt = await res.text();
+                        _prefetchCache.set(gameUrl, txt);
                     }
                     const iframe = $('#game-iframe');
-                    if (iframe) iframe.srcdoc = patched;
+                    if (iframe) iframe.srcdoc = txt;
                 } catch(e) {
                     const iframe = $('#game-iframe');
                     if (iframe) iframe.srcdoc = `<html><body style="background:#0a0a0a;color:#e55;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center"><div><div style="font-size:2rem;margin-bottom:1rem">⚠</div>Failed to load: ${e.message}</div></body></html>`;
                 }
                 return;
             }
-            // regular game
+            // regular flux game
             _origPlayGame(g);
         };
 
@@ -5026,7 +5234,7 @@ document.addEventListener('fullscreenchange', () => {
 
             // update ui
             items.forEach(it => it.classList.toggle('active', it.dataset.supplier === supplier));
-            labelEl.textContent = supplier === 'gnmath' ? 'GN-Math' : 'Flux Games';
+            labelEl.textContent = supplier === 'gnmath' ? 'GN-Math' : supplier === 'gnmath-local' ? 'GN-Math Local' : 'Flux Games';
 
             function showBar() {
                 if (!wrap || !bar) return;
@@ -5067,8 +5275,8 @@ document.addEventListener('fullscreenchange', () => {
                 renderGames($('#games-search-input').value);
                 updateHomeCount();
                 if (!silent) finishBar();
-            } else {
-                // Load GN-Math
+            } else if (supplier === 'gnmath') {
+                // Load GN-Math (remote CDN)
                 if (!silent) showBar();
                 try {
                     const gnGames = await fetchGnMathGames();
@@ -5088,6 +5296,30 @@ document.addEventListener('fullscreenchange', () => {
                             if (bar) { bar.style.background = ''; bar.style.width = '0%'; }
                         }, 2000);
                     }
+                    showToast('GN-Math failed to load', false);
+                }
+            } else {
+                // Load GN-Math Local
+                if (!silent) showBar();
+                try {
+                    const localGames = await fetchGnMathLocalGames();
+                    GAMES.length = 0;
+                    localGames.forEach(g => GAMES.push(g));
+                    renderGames($('#games-search-input').value);
+                    updateHomeCount();
+                    if (!silent) finishBar();
+                } catch(e) {
+                    if (!silent && bar) {
+                        bar.classList.remove('indeterminate');
+                        bar.style.marginLeft = '0%';
+                        bar.style.width = '100%';
+                        bar.style.background = '#e55';
+                        setTimeout(() => {
+                            if (wrap) wrap.style.display = 'none';
+                            if (bar) { bar.style.background = ''; bar.style.width = '0%'; }
+                        }, 2000);
+                    }
+                    showToast('GN-Math Local failed to load', false);
                 }
             }
         }
@@ -5108,7 +5340,7 @@ document.addEventListener('fullscreenchange', () => {
                 const sup = item.dataset.supplier;
                 document.querySelectorAll('#supplier-dropdown-list .theme-dropdown-item').forEach(i => i.classList.remove('active'));
                 item.classList.add('active');
-                $('#supplier-dropdown-label').textContent = sup === 'gnmath' ? 'GN-Math' : 'Flux Games';
+                $('#supplier-dropdown-label').textContent = sup === 'gnmath' ? 'GN-Math' : sup === 'gnmath-local' ? 'GN-Math Local' : 'Flux Games';
                 dd.classList.remove('open');
             });
             document.addEventListener('click', (e) => {
@@ -5123,15 +5355,13 @@ document.addEventListener('fullscreenchange', () => {
         });
 
         // load saved supplier
-        if (_activeSupplier === 'gnmath') {
-            // just update the label, dont fetch yet
+        if (_activeSupplier === 'gnmath' || _activeSupplier === 'gnmath-local') {
             const labelEl = $('#supplier-dropdown-label');
-            if (labelEl) labelEl.textContent = 'GN-Math';
+            if (labelEl) labelEl.textContent = _activeSupplier === 'gnmath-local' ? 'GN-Math Local' : 'GN-Math';
             document.querySelectorAll('#supplier-dropdown-list .theme-dropdown-item').forEach(i => {
-                i.classList.toggle('active', i.dataset.supplier === 'gnmath');
+                i.classList.toggle('active', i.dataset.supplier === _activeSupplier);
             });
-            // apply silently on load
-            applySupplier('gnmath', true);
+            applySupplier(_activeSupplier, true);
         }
 
         let _scramjetFailed = false;
