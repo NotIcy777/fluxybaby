@@ -23,7 +23,9 @@
 
         @font-face {
             font-family: 'MinecraftFont';
-            src: url('/Minecraft Font.ttf') format('truetype');
+            src: url('/Minecraft Font.ttf') format('truetype'),
+                 url('Minecraft Font.ttf') format('truetype'),
+                 url('link/public/Minecraft Font.ttf') format('truetype');
             font-weight: normal;
             font-style: normal;
         }
@@ -1522,6 +1524,11 @@
             color: hsl(var(--muted-foreground))
         }
 
+        #btn-gn-download {
+            position: absolute;
+            left: 16px
+        }
+
         /* navbar */
         .nav {
             z-index: 150;
@@ -2112,14 +2119,7 @@
                                 <button class="toggle-sw off" id="t-ping"><span class="knob"></span></button>
                             </div>
                         </div>
-                        <div class="s-card">
-                            <div class="s-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/></svg> Normal Grid Mode</div>
-                            <p>Disable hardware detection for particle grid.</p>
-                            <div class="s-row">
-                                <span>Enable</span>
-                                <button class="toggle-sw off" id="t-normal-grid"><span class="knob"></span></button>
-                            </div>
-                        </div>
+
                     </div>
                     <div class="settings-panel" data-panel="appearance">
                         <h2>Appearance</h2>
@@ -2326,6 +2326,15 @@
                     <path d="M16 21h3a2 2 0 0 0 2-2v-3"></path>
                 </svg>
                 Fullscreen
+
+            </button>
+            <button class="bar-btn" id="btn-gn-download" style="display:none">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                Download
 
             </button>
             <span class="playing" id="playing-label"></span>
@@ -2990,7 +2999,7 @@
             performanceMode: false,
             fpsEnabled: true,
             particleGrid: true,
-            normalGridMode: false,
+            normalGridMode: true,
             proxyMethod: 'default',
             minecraftFont: true
         };
@@ -3005,7 +3014,7 @@
         if (S.particleGrid === undefined)
             S.particleGrid = false;
         if (S.normalGridMode === undefined)
-            S.normalGridMode = false;
+            S.normalGridMode = true;
         if (S.minecraftFont === undefined)
             S.minecraftFont = true;
         function applyMinecraftFont() {
@@ -3778,8 +3787,23 @@
             };
         })();
 
+        $('#btn-gn-download').onclick = () => {
+            const data = window._gnDownloadData;
+            if (!data) return;
+            const blob = new Blob([data.html], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = data.name.replace(/[\\/:*?"<>|]/g, '_') + '.html';
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+        };
+
         $('#btn-back').onclick = () => {
             const p = $('#player');
+            window._gnDownloadData = null;
+            const dlBtn = $('#btn-gn-download');
+            if (dlBtn) dlBtn.style.display = 'none';
             // Nuke the iframe entirely to kill audio/JS — src='' alone doesn't stop srcdoc-based games
             const wrap = document.querySelector('#player .iframe-wrap');
             if (wrap) wrap.innerHTML = '<iframe id="game-iframe" allow="fullscreen; autoplay; gamepad; pointer-lock" sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-pointer-lock allow-downloads"></iframe>';
@@ -4159,7 +4183,6 @@
             setToggle($('#t-fog'), S.fogEnabled !== false);
             setToggle($('#t-particle-grid'), S.particleGrid);
             setToggle($('#t-fps'), S.fpsEnabled);
-            setToggle($('#t-normal-grid'), S.normalGridMode);
             if ($('#t-ping')) setToggle($('#t-ping'), !!S.pingEnabled);
             if ($('#t-eruda')) setToggle($('#t-eruda'), !!S.erudaEnabled);
             if ($('#t-minecraft-font')) setToggle($('#t-minecraft-font'), S.minecraftFont !== false);
@@ -4292,12 +4315,6 @@
                 applyPing();
             };
         }
-        $('#t-normal-grid').onclick = () => {
-            S.normalGridMode = !S.normalGridMode;
-            save();
-            syncSettings();
-            initParticleGrid();
-        };
 
         $('#modal-ok').onclick = () => $('#modal').classList.remove('show');
         $('#modal-enable').onclick = () => {
@@ -5076,40 +5093,64 @@ document.addEventListener('fullscreenchange', () => {
         async function fetchGnMathLocalGames() {
             if (_gnLocalCache) return _gnLocalCache;
 
-            let files;
-            try {
-                const r = await fetch(GN_LOCAL_MANIFEST + '?t=' + Date.now(), { cache: 'no-store' });
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                files = await r.json();
-                if (!Array.isArray(files) || !files.length) throw new Error('manifest is empty');
-            } catch(e) {
-                throw new Error('GN-Math Local: failed to load games.json — ' + e.message);
+            // Try absolute path first, then fall back to relative (no leading /)
+            const bases = [GN_LOCAL_BASE, GN_LOCAL_BASE.replace(/^\//, '')];
+            let files, base;
+            let lastErr;
+            for (const tryBase of bases) {
+                try {
+                    const r = await fetch(tryBase + 'games.json?t=' + Date.now(), { cache: 'no-store' });
+                    if (!r.ok) throw new Error('HTTP ' + r.status);
+                    const parsed = await r.json();
+                    if (!Array.isArray(parsed) || !parsed.length) throw new Error('manifest is empty');
+                    files = parsed;
+                    base = tryBase;
+                    break;
+                } catch(e) {
+                    lastErr = e;
+                }
             }
+            if (!files) throw new Error('GN-Math Local: failed to load games.json — ' + lastErr.message);
 
-            const games = await Promise.all(files.map(async (file) => {
-                const gameUrl = GN_LOCAL_BASE + file;
+            const games = await Promise.all(files.map(async (entry) => {
+                // Support both old string format and new pair format: ["game.html", "game.png"]
+                const isPair = Array.isArray(entry);
+                const file     = isPair ? entry[0] : entry;
+                const imgFile  = isPair ? entry[1] : null;
+
+                const gameUrl = base + file;
                 const s3Url   = GN_LOCAL_S3 + file;
                 const id = 'gnmath_local_' + file.replace(/[^a-zA-Z0-9]/g, '_');
 
+                // Derive title from filename stem
                 let title = file.replace(/\.html$/i, '').replace(/[-_]/g, ' ');
                 title = title.charAt(0).toUpperCase() + title.slice(1);
 
-                try {
-                    const r = await fetch(gameUrl, { cache: 'no-store' });
-                    if (r.ok) {
-                        const text = await r.text();
-                        const m = text.match(/<title[^>]*>([^<]+)<\/title>/i);
-                        if (m && m[1].trim()) title = m[1].trim();
-                    }
-                } catch(_) {}
+                // For old string format only: try to read title from <title> tag
+                if (!isPair) {
+                    try {
+                        const r = await fetch(gameUrl, { cache: 'no-store' });
+                        if (r.ok) {
+                            const text = await r.text();
+                            const m = text.match(/<title[^>]*>([^<]+)<\/title>/i);
+                            if (m && m[1].trim()) title = m[1].trim();
+                        }
+                    } catch(_) {}
+                }
 
                 let image = '';
-                const stem = file.replace(/\.html$/i, '');
-                for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
-                    try {
-                        const ir = await fetch(GN_LOCAL_BASE + stem + ext, { method: 'HEAD', cache: 'no-store' });
-                        if (ir.ok) { image = GN_LOCAL_BASE + stem + ext; break; }
-                    } catch(_) {}
+                if (isPair && imgFile) {
+                    // Image explicitly provided in the pair
+                    image = base + imgFile;
+                } else if (!isPair) {
+                    // Old format: probe for image by extension
+                    const stem = file.replace(/\.html$/i, '');
+                    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
+                        try {
+                            const ir = await fetch(base + stem + ext, { method: 'HEAD', cache: 'no-store' });
+                            if (ir.ok) { image = base + stem + ext; break; }
+                        } catch(_) {}
+                    }
                 }
 
                 return { id, title, url: gameUrl, s3Url, image, _gnLocal: true };
@@ -5213,6 +5254,9 @@ document.addEventListener('fullscreenchange', () => {
                     }
                     const iframe = $('#game-iframe');
                     if (iframe) iframe.srcdoc = txt;
+                    window._gnDownloadData = { name: g.title, html: txt };
+                    const dlBtn = $('#btn-gn-download');
+                    if (dlBtn) dlBtn.style.display = '';
                 } catch(e) {
                     const iframe = $('#game-iframe');
                     if (iframe) iframe.srcdoc = `<html><body style="background:#0a0a0a;color:#e55;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center"><div><div style="font-size:2rem;margin-bottom:1rem">⚠</div>Failed to load: ${e.message}</div></body></html>`;
@@ -5320,6 +5364,27 @@ document.addEventListener('fullscreenchange', () => {
                         }, 2000);
                     }
                     showToast('GN-Math Local failed to load', false);
+                    // Apply same relative-path fix as scramjet failure
+                    try {
+                        const styleSheets = Array.from(document.styleSheets);
+                        for (const sheet of styleSheets) {
+                            try {
+                                const rules = Array.from(sheet.cssRules || []);
+                                for (const rule of rules) {
+                                    if (rule instanceof CSSFontFaceRule) {
+                                        const src = rule.style.getPropertyValue('src');
+                                        if (src && src.includes("'/Minecraft Font.ttf'")) {
+                                            rule.style.setProperty('src', "url('Minecraft Font.ttf') format('truetype'), url('link/public/Minecraft Font.ttf') format('truetype')");
+                                        }
+                                    }
+                                }
+                            } catch(_) {}
+                        }
+                    } catch(_) {}
+                    GAMES.forEach(g => {
+                        if (g.url && g.url.startsWith('/')) g.url = g.url.substring(1);
+                        if (g.image && g.image.startsWith('/')) g.image = g.image.substring(1);
+                    });
                 }
             }
         }
@@ -5386,7 +5451,7 @@ document.addEventListener('fullscreenchange', () => {
                                 if (rule instanceof CSSFontFaceRule) {
                                     const src = rule.style.getPropertyValue('src');
                                     if (src && src.includes("'/Minecraft Font.ttf'")) {
-                                        rule.style.setProperty('src', src.replace("url('/Minecraft Font.ttf')", "url('Minecraft Font.ttf')"));
+                                        rule.style.setProperty('src', "url('Minecraft Font.ttf') format('truetype'), url('link/public/Minecraft Font.ttf') format('truetype')");
                                     }
                                 }
                             }
@@ -5409,6 +5474,88 @@ document.addEventListener('fullscreenchange', () => {
     <script src="vanta.fog.min.js"></script>
     <script>
         if (typeof initFog === 'function') initFog();
+    </script>
+    <script>
+        // ── GN-Math bulk download key combo: Up, Down, Up, Left ──────────────────
+        (function() {
+            const COMBO = ['ArrowUp', 'ArrowDown', 'ArrowUp', 'ArrowLeft'];
+            let _seq = [];
+
+            document.addEventListener('keydown', async function(e) {
+                if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+                    _seq.push(e.key);
+                    if (_seq.length > COMBO.length) _seq.shift();
+                    if (_seq.join(',') === COMBO.join(',')) {
+                        _seq = [];
+                        // Only trigger when on the games view with GN-Math supplier active
+                        if (_activeSupplier !== 'gnmath') return;
+                        if (document.getElementById('player')?.classList.contains('active')) return;
+
+                        showToast('Fetching all GN-Math games for download...', true);
+
+                        try {
+                            // Dynamically load JSZip
+                            if (!window.JSZip) {
+                                await new Promise((resolve, reject) => {
+                                    const s = document.createElement('script');
+                                    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                                    s.onload = resolve;
+                                    s.onerror = reject;
+                                    document.head.appendChild(s);
+                                });
+                            }
+
+                            const games = _gnGamesCache || await fetchGnMathGames();
+                            const zip = new JSZip();
+                            let done = 0;
+
+                            const results = await Promise.allSettled(games.map(async g => {
+                                const z = g._gnZone;
+                                const baseName = g.title.replace(/[\\/:*?"<>|]/g, '_');
+
+                                // fetch HTML
+                                const url = gnResolveUrl(z.url);
+                                let txt = _prefetchCache.get(url);
+                                if (!txt) {
+                                    const res = await fetch(url);
+                                    if (!res.ok) throw new Error('HTTP ' + res.status);
+                                    txt = await res.text();
+                                    _prefetchCache.set(url, txt);
+                                }
+                                zip.file(baseName + '.html', txt);
+
+                                // fetch cover image
+                                if (g.image) {
+                                    try {
+                                        const imgRes = await fetch(g.image);
+                                        if (imgRes.ok) {
+                                            const ext = (g.image.split('?')[0].match(/\.([a-zA-Z0-9]+)$/) || [])[1] || 'png';
+                                            zip.file(baseName + '.' + ext, await imgRes.arrayBuffer());
+                                        }
+                                    } catch(_) {}
+                                }
+
+                                done++;
+                            }));
+
+                            const failed = results.filter(r => r.status === 'rejected').length;
+                            const blob = await zip.generateAsync({ type: 'blob' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = 'gn-math-games.zip';
+                            a.click();
+                            setTimeout(() => URL.revokeObjectURL(url), 15000);
+                            showToast('Downloaded ' + done + ' games' + (failed ? ' (' + failed + ' failed)' : '') + '!', true);
+                        } catch(err) {
+                            showToast('Bulk download failed: ' + err.message, false);
+                        }
+                    }
+                } else {
+                    _seq = [];
+                }
+            });
+        })();
     </script>
     <script defer="" src="https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015" integrity="sha512-ZpsOmlRQV6y907TI0dKBHq9Md29nnaEIPlkf84rnaERnq6zvWvPUqr2ft8M1aS28oN72PdrCzSjY4U6VaAw1EQ==" data-cf-beacon="{&quot;version&quot;:&quot;2024.11.0&quot;,&quot;token&quot;:&quot;b6c6421bde3c48e5ac7f9b8dbecc7bd7&quot;,&quot;r&quot;:1,&quot;server_timing&quot;:{&quot;name&quot;:{&quot;cfCacheStatus&quot;:true,&quot;cfEdge&quot;:true,&quot;cfExtPri&quot;:true,&quot;cfL4&quot;:true,&quot;cfOrigin&quot;:true,&quot;cfSpeedBrain&quot;:true},&quot;location_startswith&quot;:null}}" crossorigin="anonymous"></script>
     <script src="./eruda.js"></script>
